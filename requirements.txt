@@ -1,4 +1,6 @@
 arxiv
+google-genai
 google-generativeai
+groq
 python-dotenv
 pydantic

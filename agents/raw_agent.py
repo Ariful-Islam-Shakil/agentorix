@@ -1,7 +1,15 @@
 """
 raw-agent.py
 ============
-A minimal CrewAI-like multi-agent framework backed by the Google Gemini API.
+A minimal CrewAI-like multi-agent framework.
+
+Supported LLM providers
+-----------------------
+- Google Gemini  (default)  — set llm="gemini-2.5-flash" or any gemini-* model
+- Groq                      — set llm="llama-3.3-70b-versatile" or any groq model
+
+The provider is detected automatically from the model name, or you can pass
+`provider="gemini"` / `provider="groq"` explicitly.
 
 Core classes
 ------------
@@ -25,6 +33,37 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Provider helpers
+# ---------------------------------------------------------------------------
+
+# Groq model name fragments — used for auto-detection
+_GROQ_MODEL_PREFIXES = (
+    "llama",
+    "mixtral",
+    "gemma",
+    "whisper",
+    "qwen",
+    "deepseek",
+    "distil",
+)
+
+
+def _detect_provider(model: str) -> str:
+    """
+    Infer the LLM provider from the model name.
+
+    Returns "gemini" or "groq".
+    """
+    lower = model.lower()
+    if lower.startswith("gemini"):
+        return "gemini"
+    if any(lower.startswith(p) for p in _GROQ_MODEL_PREFIXES):
+        return "groq"
+    # Default to gemini for unknown model names
+    return "gemini"
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +167,7 @@ class Agent:
         goal: str,
         backstory: str = "You are a helpful assistant.",
         llm: str = "gemini-2.5-flash",
+        provider: Optional[str] = None,   # "gemini" | "groq" | None (auto-detect)
         tools: Optional[List[Tool]] = None,
         max_iterations: int = 5,
         max_retries: int = 3,
@@ -137,6 +177,7 @@ class Agent:
         self.goal = goal
         self.backstory = backstory
         self.llm = llm
+        self.provider: str = provider or _detect_provider(llm)
         self.tools: List[Tool] = tools or []
         self.max_iterations = max_iterations
         self.max_retries = max_retries
@@ -186,7 +227,17 @@ class Agent:
                 """
 
     def _call_llm(self, messages: List[Dict[str, str]]) -> _AgentResponse:
-        """Send messages to Gemini and parse the structured response.
+        """Route to the correct provider backend."""
+        if self.provider == "groq":
+            return self._call_groq(messages)
+        return self._call_gemini(messages)
+
+    # ------------------------------------------------------------------
+    # Gemini backend
+    # ------------------------------------------------------------------
+
+    def _call_gemini(self, messages: List[Dict[str, str]]) -> _AgentResponse:
+        """Call Google Gemini with structured JSON output.
         Retries up to self.max_retries times on 429 quota errors.
         """
         api_key = os.getenv("GEMINI_API_KEY")
@@ -220,15 +271,90 @@ class Agent:
                 last_exc = exc
                 err_str = str(exc)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    wait = 20 * attempt  # 20s, 40s, 60s ...
+                    wait = 20 * attempt  # 20s, 40s, 60s …
                     self._log(
                         "RETRY",
-                        f"Rate-limited (429). Waiting {wait}s before retry "
+                        f"[Gemini] Rate-limited (429). Waiting {wait}s before retry "
                         f"{attempt}/{self.max_retries}...",
                     )
                     time.sleep(wait)
                 else:
-                    raise  # Non-quota error → propagate immediately
+                    raise
+        raise last_exc
+
+    # ------------------------------------------------------------------
+    # Groq backend
+    # ------------------------------------------------------------------
+
+    def _call_groq(self, messages: List[Dict[str, str]]) -> _AgentResponse:
+        """Call Groq (OpenAI-compatible) with JSON mode.
+        Parses the raw JSON string into _AgentResponse manually.
+        Retries up to self.max_retries times on 429 / rate-limit errors.
+        """
+        try:
+            from groq import Groq  # lazy import — only required when using Groq
+        except ImportError:
+            raise ImportError(
+                "The 'groq' package is required for Groq models. "
+                "Install it with:  pip install groq"
+            )
+
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise EnvironmentError(
+                "GROQ_API_KEY environment variable is not set."
+            )
+
+        client = Groq(api_key=api_key)
+        system_prompt = self._build_system_prompt()
+
+        # Groq uses the OpenAI chat format — build the message list properly
+        groq_messages = [{"role": "system", "content": system_prompt}] + messages
+
+        last_exc: Exception = RuntimeError("No attempts made.")
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                completion = client.chat.completions.create(
+                    model=self.llm,
+                    messages=groq_messages,  # type: ignore[arg-type]
+                    response_format={"type": "json_object"},
+                    temperature=0.3,
+                )
+                raw_json = completion.choices[0].message.content or "{}"
+                data = json.loads(raw_json)
+
+                # Normalise tool_call sub-object
+                tool_call_data = data.get("tool_call")
+                tool_call = None
+                if tool_call_data and isinstance(tool_call_data, dict):
+                    # Groq may return arguments as a dict — re-serialise to JSON string
+                    args = tool_call_data.get("arguments_json", "{}")
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
+                    tool_call = _ToolCall(
+                        tool_name=tool_call_data.get("tool_name", ""),
+                        arguments_json=args,
+                    )
+
+                return _AgentResponse(
+                    thought=data.get("thought", ""),
+                    action=data.get("action", "final_answer"),
+                    tool_call=tool_call,
+                    final_answer=data.get("final_answer"),
+                )
+            except Exception as exc:
+                last_exc = exc
+                err_str = str(exc)
+                if "429" in err_str or "rate_limit" in err_str.lower():
+                    wait = 10 * attempt  # 10s, 20s, 30s …
+                    self._log(
+                        "RETRY",
+                        f"[Groq] Rate-limited. Waiting {wait}s before retry "
+                        f"{attempt}/{self.max_retries}...",
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
         raise last_exc
 
     def _log(self, tag: str, message: str) -> None:

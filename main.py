@@ -108,6 +108,21 @@ counter_tool = Tool(
 # ---------------------------------------------------------------------------
 # 2.  Define Agents
 # ---------------------------------------------------------------------------
+# 💡 Provider is auto-detected from the model name — no extra config needed.
+#
+#   Gemini models  → start with "gemini-"
+#     llm="gemini-2.5-flash"         (requires GEMINI_API_KEY in .env)
+#     llm="gemini-2.0-flash"
+#
+#   Groq models    → start with "llama", "mixtral", "deepseek", etc.
+#     llm="llama-3.3-70b-versatile"  (requires GROQ_API_KEY in .env)
+#     llm="llama-3.1-8b-instant"
+#     llm="mixtral-8x7b-32768"
+#     llm="deepseek-r1-distil-llama-70b"
+#
+#   You can also override explicitly:
+#     Agent(..., llm="my-model", provider="groq")
+# ---------------------------------------------------------------------------
 
 research_agent = Agent(
     role="Research Analyst",
@@ -116,7 +131,11 @@ research_agent = Agent(
         "You are an experienced research analyst who excels at distilling "
         "complex information into clear, factual summaries."
     ),
-    llm="gemini-2.5-flash",
+    # ── Switch provider by changing the model name ──────────────────────────
+    llm="llama-3.3-70b-versatile",      # Groq  (auto-detected)
+    # llm="gemini-2.5-flash",           # Gemini (auto-detected)
+    # ────────────────────────────────────────────────────────────────────────
+    provider='groq',
     tools=[search_papers_tool],
     max_iterations=4,
     verbose=True,
@@ -129,7 +148,10 @@ writer_agent = Agent(
         "You are a skilled technical writer who can turn bullet-point research "
         "into engaging, professional prose that is easy to understand."
     ),
-    llm="gemini-2.5-flash",
+    # ── Switch provider by changing the model name ──────────────────────────
+    llm="llama-3.1-8b-instant",         # Groq  (auto-detected, fast + cheap)
+    # llm="gemini-2.5-flash",           # Gemini (auto-detected)
+    # ────────────────────────────────────────────────────────────────────────
     tools=[counter_tool],
     max_iterations=3,
     verbose=True,
