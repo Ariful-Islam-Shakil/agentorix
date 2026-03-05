@@ -484,11 +484,13 @@ class Task:
         expected_output: str,
         agent: Optional[Agent] = None,
         context_tasks: Optional[List["Task"]] = None,
+        output_file: Optional[str] = None,
     ) -> None:
         self.description = description
         self.expected_output = expected_output
         self.agent = agent
         self.context_tasks: List["Task"] = context_tasks or []
+        self.output_file = output_file
 
         # Populated after run()
         self.output: Optional[str] = None
@@ -532,6 +534,14 @@ class Task:
         context = self._build_context()
         prompt = self._build_task_prompt()
         self.output = self.agent.run(task_description=prompt, context=context)
+
+        if self.output and self.output_file:
+            try:
+                with open(self.output_file, "w", encoding="utf-8") as f:
+                    f.write(self.output)
+            except Exception as e:
+                print(f"Error saving output to {self.output_file}: {e}")
+
         return self.output
 
     def __repr__(self) -> str:

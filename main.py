@@ -162,29 +162,47 @@ writer_agent = Agent(
 # 3.  Define Tasks
 # ---------------------------------------------------------------------------
 
-research_task = Task(
+# ── Sequential tasks (Task 2 depends on Task 1 via context_tasks) ───────────
+seq_research_task = Task(
     description=(
-        "Research the topic 'Python' and summarise: "
-        "(1) what they are, (2) what are the use cases, "
-        "(3) what are the key features."
+        "Research the topic 'Python programming language' and summarise: "
+        "(1) what it is, (2) its main use cases, (3) its key features."
     ),
-    expected_output=(
-        "A 3-5 sentence factual summary covering the three points above."
-    ),
+    expected_output="A 3-5 sentence factual summary covering all three points.",
     agent=research_agent,
 )
 
-writing_task = Task(
+seq_writing_task = Task(
     description=(
         "Using the research notes provided, write a short report (100-150 words) "
-        "about Python.  The report should have a title, two short paragraphs, "
-        "and a one-line conclusion."
+        "about Python. Include a title, two short paragraphs, and a one-line conclusion."
     ),
-    expected_output=(
-        "A polished short report with a title, two paragraphs, and a conclusion."
-    ),
+    expected_output="A polished short report with a title, two paragraphs, and a conclusion.",
     agent=writer_agent,
-    context_tasks=[research_task],   # ← writer sees the researcher's output
+    context_tasks=[seq_research_task],   # ← writer sees the researcher's output
+    output_file="report.md"              # ← saves final result here
+)
+
+# ── Parallel tasks (fully independent — no context_tasks between them) ───────
+# In parallel mode both tasks run at the same time in separate threads.
+par_task_1 = Task(
+    description=(
+        "Research the topic 'Python programming language' and summarise: "
+        "(1) what it is, (2) its main use cases, (3) its key features. "
+        "Provide a 3-5 sentence factual summary."
+    ),
+    expected_output="A 3-5 sentence factual summary about Python.",
+    agent=research_agent,
+)
+
+par_task_2 = Task(
+    description=(
+        "Research the topic 'Machine Learning' and summarise: "
+        "(1) what it is, (2) its main algorithms, (3) real-world applications. "
+        "Provide a 3-5 sentence factual summary."
+    ),
+    expected_output="A 3-5 sentence factual summary about Machine Learning.",
+    agent=writer_agent,   # writer agent handles this independent task
 )
 
 
@@ -192,22 +210,76 @@ writing_task = Task(
 # 4.  Run the crew
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+import time
+import sys
+
+def run_sequential() -> None:
+    print("\n" + "━" * 60)
+    print("  MODE: SEQUENTIAL  (Task 2 uses Task 1 output as context)")
+    print("━" * 60)
+
     crew = RawAgent(
-        tasks=[research_task, writing_task],
+        tasks=[seq_research_task, seq_writing_task],
         agents=[research_agent, writer_agent],
         process="sequential",
         verbose=True,
     )
 
+    t0 = time.perf_counter()
     outputs = crew.run()
+    elapsed = time.perf_counter() - t0
 
     print("\n" + "=" * 60)
-    print("FINAL OUTPUTS")
+    print(f"SEQUENTIAL RESULTS  ({elapsed:.1f}s total)")
     print("=" * 60)
     for i, (task, output) in enumerate(zip(crew.tasks, outputs), 1):
         print(f"\n--- Task {i}: {task.description[:60]}... ---")
         print(output)
+
+
+def run_parallel() -> None:
+    print("\n" + "━" * 60)
+    print("  MODE: PARALLEL  (both tasks run simultaneously in threads)")
+    print("━" * 60)
+
+    crew = RawAgent(
+        tasks=[par_task_1, par_task_2],
+        agents=[research_agent, writer_agent],
+        process="parallel",
+        verbose=True,
+    )
+
+    t0 = time.perf_counter()
+    outputs = crew.run()
+    elapsed = time.perf_counter() - t0
+
+    print("\n" + "=" * 60)
+    print(f"PARALLEL RESULTS  ({elapsed:.1f}s total)")
+    print("=" * 60)
+    for i, (task, output) in enumerate(zip(crew.tasks, outputs), 1):
+        print(f"\n--- Task {i}: {task.description[:60]}... ---")
+        print(output)
+
+
+def main() -> None:
+    # Usage:
+    #   python main.py             → sequential (default)
+    #   python main.py sequential  → sequential
+    #   python main.py parallel    → parallel
+    #   python main.py both        → sequential first, then parallel (for comparison)
+    mode = sys.argv[1].lower() if len(sys.argv) > 1 else "sequential"
+
+    if mode == "sequential":
+        run_sequential()
+    elif mode == "parallel":
+        run_parallel()
+    elif mode == "both":
+        run_sequential()
+        print("\n\n")
+        run_parallel()
+    else:
+        print(f"Unknown mode '{mode}'. Use: sequential | parallel | both")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
